@@ -1,0 +1,32 @@
+[package]
+name = "claude-block-checker"
+version = "0.1.0"
+edition = "2021"
+description = "Check Claude Code usage in current billing blocks across profiles"
+authors = ["Kento Masui"]
+license = "MIT"
+
+[dependencies]
+# Core dependencies
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive", "color", "wrap_help"] }
+anyhow = "1.0"
+colored = "2.1"
+
+# File and path handling
+home = "0.5"
+walkdir = "2.5"
+
+# Parallel processing
+rayon = "1.10"
+
+# Number formatting
+num-format = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
