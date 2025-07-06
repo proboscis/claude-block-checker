@@ -10,6 +10,8 @@ A focused Rust implementation for checking Claude Code usage in the current bill
 - Token usage breakdown (input/output/cache)
 - Cost calculation based on model pricing
 - Time remaining in current block
+- **Time until usage limit** - Shows how long until 300M token limit
+- **Recommends best profile** - Automatically suggests profile with most headroom
 - Burn rate and projections
 - Colored terminal output
 - JSON output support
@@ -95,11 +97,22 @@ Found 3 profiles
     Total:  58,170
 
   Cost: $0.001234
+
+━━━ Summary ━━━
+Active profiles: 3/3
+
+Recommended Profile:
+  cryptic-1 → 8h 45m until limit
 ```
 
 ### Detailed output (--detailed)
 Adds:
 - Burn rate (tokens/min, $/hour)
+- **Time until 300M token limit** with color coding:
+  - 🟢 Green: >3 hours remaining
+  - 🟡 Yellow: 1-3 hours remaining  
+  - 🔴 Red: <1 hour remaining
+- Percentage of limit used
 - Projected usage for full 5-hour block
 
 ### JSON output (--json)

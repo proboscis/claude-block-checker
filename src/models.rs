@@ -2,6 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Claude Code usage limits (tokens per 5-hour block)
+pub const CLAUDE_TOKEN_LIMIT: u64 = 300_000_000; // 300M tokens per 5 hours
+
 /// Raw usage data from JSONL files
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawUsageEntry {
@@ -72,6 +75,15 @@ pub struct BurnRate {
     pub cost_per_hour: f64,
     pub projected_tokens: u64,
     pub projected_cost: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_until_limit: Option<TimeUntilLimit>,
+}
+
+/// Time until usage limit
+#[derive(Debug, Clone, Serialize)]
+pub struct TimeUntilLimit {
+    pub minutes: u64,
+    pub human_readable: String,
 }
 
 /// Model pricing information

@@ -58,6 +58,8 @@ struct ProfileUsage {
     total_tokens: u64,
     total_cost: f64,
     models_used: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minutes_until_limit: Option<u64>,
 }
 
 fn main() -> Result<()> {
@@ -196,15 +198,29 @@ fn check_all_profiles(profiles_dir: &Path, detailed: bool, json: bool) -> Result
         }
     }
     
+    // Find profile with most time remaining
+    let best_profile = all_usage.iter()
+        .filter(|p| p.minutes_until_limit.is_some())
+        .max_by_key(|p| p.minutes_until_limit.unwrap_or(0));
+    
     if json {
+        let mut summary = serde_json::json!({
+            "total_profiles": all_usage.len(),
+            "active_profiles": active_count,
+            "total_tokens": total_tokens,
+            "total_cost": total_cost,
+        });
+        
+        if let Some(best) = best_profile {
+            summary["recommended_profile"] = serde_json::json!({
+                "name": best.name,
+                "minutes_until_limit": best.minutes_until_limit,
+            });
+        }
+        
         let output = serde_json::json!({
             "profiles": all_usage,
-            "summary": {
-                "total_profiles": all_usage.len(),
-                "active_profiles": active_count,
-                "total_tokens": total_tokens,
-                "total_cost": total_cost,
-            }
+            "summary": summary,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -215,6 +231,22 @@ fn check_all_profiles(profiles_dir: &Path, detailed: bool, json: bool) -> Result
             println!("\n{}", "Aggregate Totals:".bold());
             println!("  Total Tokens: {}", total_tokens.to_formatted_string(&Locale::en));
             println!("  Total Cost:   ${:.4}", total_cost);
+            
+            // Show recommended profile
+            if let Some(best) = best_profile {
+                if let Some(minutes) = best.minutes_until_limit {
+                    let hours = minutes / 60;
+                    let mins = minutes % 60;
+                    let time_str = if hours > 0 {
+                        format!("{}h {}m", hours, mins)
+                    } else {
+                        format!("{}m", mins)
+                    };
+                    
+                    println!("\n{}", "Recommended Profile:".bold().cyan());
+                    println!("  {} → {} until limit", best.name.cyan().bold(), time_str.green());
+                }
+            }
         }
     }
     
@@ -231,6 +263,7 @@ fn check_profile(profile_path: &Path, profile_name: &str, detailed: bool) -> Res
             total_tokens: 0,
             total_cost: 0.0,
             models_used: Vec::new(),
+            minutes_until_limit: None,
         });
     }
     
@@ -244,6 +277,7 @@ fn check_profile(profile_path: &Path, profile_name: &str, detailed: bool) -> Res
             total_tokens: 0,
             total_cost: 0.0,
             models_used: Vec::new(),
+            minutes_until_limit: None,
         });
     }
     
@@ -254,9 +288,8 @@ fn check_profile(profile_path: &Path, profile_name: &str, detailed: bool) -> Res
     let mut active_block = blocks.into_iter()
         .find(|block| block.is_active);
     
-    // Calculate burn rate if detailed mode and active block exists
-    if detailed {
-        if let Some(ref mut block) = active_block {
+    // Always calculate burn rate to determine time until limit
+    if let Some(ref mut block) = active_block {
             let now = Utc::now();
             let elapsed = (now - block.start_time).num_minutes() as f64;
             if elapsed > 1.0 {
@@ -275,23 +308,50 @@ fn check_profile(profile_path: &Path, profile_name: &str, detailed: bool) -> Res
                     block.total_cost
                 };
                 
+                // Calculate time until limit
+                let time_until_limit = if tokens_per_minute > 0 {
+                    let tokens_remaining = models::CLAUDE_TOKEN_LIMIT.saturating_sub(block.total_tokens);
+                    let minutes_until_limit = tokens_remaining / tokens_per_minute;
+                    
+                    // Format human readable time
+                    let hours = minutes_until_limit / 60;
+                    let mins = minutes_until_limit % 60;
+                    let human_readable = if hours > 0 {
+                        format!("{}h {}m", hours, mins)
+                    } else {
+                        format!("{}m", mins)
+                    };
+                    
+                    Some(models::TimeUntilLimit {
+                        minutes: minutes_until_limit,
+                        human_readable,
+                    })
+                } else {
+                    None
+                };
+                
                 block.burn_rate = Some(models::BurnRate {
                     elapsed_minutes: elapsed as u64,
                     tokens_per_minute,
                     cost_per_hour,
                     projected_tokens,
                     projected_cost,
+                    time_until_limit,
                 });
             }
-        }
     }
     
     if let Some(ref block) = active_block {
+        let minutes_until_limit = block.burn_rate.as_ref()
+            .and_then(|br| br.time_until_limit.as_ref())
+            .map(|tul| tul.minutes);
+            
         Ok(ProfileUsage {
             name: profile_name.to_string(),
             total_tokens: block.total_tokens,
             total_cost: block.total_cost,
             models_used: block.models.clone(),
+            minutes_until_limit,
             active_block,
         })
     } else {
@@ -301,6 +361,7 @@ fn check_profile(profile_path: &Path, profile_name: &str, detailed: bool) -> Res
             total_tokens: 0,
             total_cost: 0.0,
             models_used: Vec::new(),
+            minutes_until_limit: None,
         })
     }
 }
@@ -343,24 +404,36 @@ fn print_profile_usage(usage: &ProfileUsage, detailed: bool) {
         
         // Burn rate and projections
         if detailed {
-            let elapsed = (now - block.start_time).num_minutes() as f64;
-            if elapsed > 1.0 {
-                let tokens_per_minute = block.total_tokens as f64 / elapsed;
-                let cost_per_hour = (block.total_cost / elapsed) * 60.0;
-                
+            if let Some(ref burn_rate) = block.burn_rate {
                 println!("\n  {}:", "Burn Rate".bold());
-                println!("    {} tokens/min", (tokens_per_minute as u64).to_formatted_string(&Locale::en));
-                println!("    ${:.4}/hour", cost_per_hour);
+                println!("    {} tokens/min", burn_rate.tokens_per_minute.to_formatted_string(&Locale::en));
+                println!("    ${:.4}/hour", burn_rate.cost_per_hour);
                 
-                let remaining_minutes = (5.0 * 60.0) - elapsed;
-                if remaining_minutes > 0.0 {
-                    let projected_tokens = block.total_tokens as f64 + (tokens_per_minute * remaining_minutes);
-                    let projected_cost = block.total_cost + (cost_per_hour * remaining_minutes / 60.0);
+                // Time until limit
+                if let Some(ref time_limit) = burn_rate.time_until_limit {
+                    let color = if time_limit.minutes < 60 {
+                        "red"
+                    } else if time_limit.minutes < 180 {
+                        "yellow" 
+                    } else {
+                        "green"
+                    };
                     
-                    println!("\n  {}:", "Projected (5h)".bold());
-                    println!("    Tokens: {}", (projected_tokens as u64).to_formatted_string(&Locale::en));
-                    println!("    Cost:   ${:.4}", projected_cost);
+                    let time_str = match color {
+                        "red" => time_limit.human_readable.red(),
+                        "yellow" => time_limit.human_readable.yellow(),
+                        _ => time_limit.human_readable.green(),
+                    };
+                    
+                    println!("\n  {}:", "Time Until Limit".bold());
+                    println!("    {}", time_str);
+                    println!("    ({:.1}% of limit used)", 
+                        (block.total_tokens as f64 / models::CLAUDE_TOKEN_LIMIT as f64) * 100.0);
                 }
+                
+                println!("\n  {}:", "Projected (5h)".bold());
+                println!("    Tokens: {}", burn_rate.projected_tokens.to_formatted_string(&Locale::en));
+                println!("    Cost:   ${:.4}", burn_rate.projected_cost);
             }
         }
         
